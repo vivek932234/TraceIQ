@@ -12,9 +12,9 @@ def build_evidence(
         "observations": []
     }
 
-    # -----------------------------
+    # ---------------------------------
     # Primary Error
-    # -----------------------------
+    # ---------------------------------
     evidence["primary_error"] = {
         "type": error_analysis.get("exception_type"),
         "message": error_analysis.get("message"),
@@ -25,58 +25,58 @@ def build_evidence(
 
     exception_type = error_analysis.get("exception_type")
 
-    # -----------------------------
-    # Code Evidence
-    # -----------------------------
+    # ---------------------------------
+    # Static Code Evidence
+    # ---------------------------------
     for issue in code_analysis.get("potential_issues", []):
+        issue_type = issue.get("type")
 
-        if exception_type == "TypeError" and issue.get("type") == "TypeMismatch":
-
+        if exception_type == "TypeError" and issue_type == "TypeMismatch":
             evidence["supporting_evidence"].append({
                 "source": "static_code_analysis",
-                "type": issue.get("type"),
+                "type": issue_type,
                 "line": issue.get("line"),
                 "message": issue.get("message")
             })
 
-    # -----------------------------
+    # ---------------------------------
     # Log Evidence
-    # -----------------------------
+    # ---------------------------------
     for log in log_analysis.get("errors", []):
-
         category = log.get("category")
 
-        # Logs that directly support the current error
+        entry = {
+            "source": "application_logs",
+            "timestamp": log.get("timestamp"),
+            "level": log.get("level"),
+            "message": log.get("message"),
+            "category": category
+        }
+
+        # A generic HTTP 500 is not proof of a TypeError.
+        # Without trace-ID or timestamp correlation, classify it
+        # as unconfirmed rather than causally related.
         if exception_type == "TypeError":
             if category == "server_error":
-                evidence["related_logs"].append({
-                    "source": "application_logs",
-                    "timestamp": log.get("timestamp"),
-                    "level": log.get("level"),
-                    "message": log.get("message"),
-                    "category": category
-                })
+                entry["relationship"] = "unconfirmed"
+                evidence["unrelated_logs"].append(entry)
             else:
-                evidence["unrelated_logs"].append({
-                    "source": "application_logs",
-                    "timestamp": log.get("timestamp"),
-                    "level": log.get("level"),
-                    "message": log.get("message"),
-                    "category": category
-                })
+                entry["relationship"] = "unconfirmed"
+                evidence["unrelated_logs"].append(entry)
+
+        elif exception_type is None:
+            # No primary exception exists to correlate against.
+            entry["relationship"] = "unconfirmed"
+            evidence["unrelated_logs"].append(entry)
 
         else:
-            evidence["related_logs"].append({
-                "source": "application_logs",
-                "timestamp": log.get("timestamp"),
-                "level": log.get("level"),
-                "message": log.get("message"),
-                "category": category
-            })
+            # The log is a possible lead, not confirmed causal evidence.
+            entry["relationship"] = "unconfirmed"
+            evidence["related_logs"].append(entry)
 
-    # -----------------------------
+    # ---------------------------------
     # Observations
-    # -----------------------------
+    # ---------------------------------
     if exception_type:
         evidence["observations"].append(
             f"Application raised {exception_type}."
@@ -89,13 +89,13 @@ def build_evidence(
 
     if evidence["related_logs"]:
         evidence["observations"].append(
-            "Application logs contain entries related to the failure."
+            "Application logs contain potential leads requiring correlation."
         )
 
     if evidence["unrelated_logs"]:
         evidence["observations"].append(
-            "Some log entries were detected but do not directly support "
-            "the identified root cause."
+            "Log entries were found, but their causal relationship "
+            "to the primary error has not been established."
         )
 
     return evidence
