@@ -1,7 +1,8 @@
 
-from fastapi import APIRouter
+
 
 from app.models.schemas import DebugRequest
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.analyzers.error_analyzer import analyze_error
 from app.analyzers.code_analyzer import analyze_code
@@ -14,6 +15,11 @@ from app.analyzers.fix_recommendation_engine import (
 from app.analyzers.fix_validation_engine import validate_fix
 
 from app.ai.debugging_agent import debug_with_ai
+from sqlalchemy.orm import Session
+
+
+from app.database import get_db
+from app.models.debug_history import DebugHistory
 
 
 router = APIRouter(
@@ -23,7 +29,10 @@ router = APIRouter(
 
 
 @router.post("/debug")
-def debug_application(request: DebugRequest):
+def debug_application(
+    request: DebugRequest,
+    db: Session = Depends(get_db),
+):
 
     # Step 1: Analyze the error
     error_analysis = analyze_error(
@@ -75,6 +84,27 @@ def debug_application(request: DebugRequest):
         logs=request.logs or "",
         root_cause=root_cause
     )
+    history_record = DebugHistory(
+        error_message=(
+            error_analysis.get("message")
+            or request.error
+            or "Unknown error"
+        ),
+        exception_type=error_analysis.get("exception_type"),
+        root_cause=root_cause.get("root_cause", "Unknown"),
+        confidence=root_cause.get("confidence"),
+        fix_recommendation=fix_recommendation,
+        fix_validation=fix_validation,
+        ai_analysis=ai_analysis,
+    )
+
+    try:
+        db.add(history_record)
+        db.commit()
+        db.refresh(history_record)
+    except Exception:
+        db.rollback()
+        raise
 
     # Step 9: Return the complete debugging report
     return {
@@ -87,4 +117,67 @@ def debug_application(request: DebugRequest):
         "fix_recommendation": fix_recommendation,
         "fix_validation": fix_validation,
         "ai_analysis": ai_analysis,
+        "history_id": history_record.id,
     }
+
+
+
+@router.get("/debug/history")
+def get_debug_history(
+    db: Session = Depends(get_db),
+):
+    records = (
+        db.query(DebugHistory)
+        .order_by(
+            DebugHistory.created_at.desc(),
+            DebugHistory.id.desc(),
+        )
+        .limit(100)
+        .all()
+    )
+
+    return {
+        "total": len(records),
+        "history": [
+            {
+                "id": record.id,
+                "error_message": record.error_message,
+                "exception_type": record.exception_type,
+                "root_cause": record.root_cause,
+                "confidence": record.confidence,
+                "created_at": record.created_at,
+            }
+            for record in records
+        ],
+    }
+
+
+@router.get("/debug/history/{history_id}")
+def get_debug_history_by_id(
+    history_id: int,
+    db: Session = Depends(get_db),
+):
+    record = (
+        db.query(DebugHistory)
+        .filter(DebugHistory.id == history_id)
+        .first()
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Debug history record {history_id} not found",
+        )
+
+    return {
+        "id": record.id,
+        "error_message": record.error_message,
+        "exception_type": record.exception_type,
+        "root_cause": record.root_cause,
+        "confidence": record.confidence,
+        "fix_recommendation": record.fix_recommendation,
+        "fix_validation": record.fix_validation,
+        "ai_analysis": record.ai_analysis,
+        "created_at": record.created_at,
+    }
+
