@@ -1,4 +1,7 @@
+import json
 
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import Response
 
 
 from app.models.schemas import DebugRequest
@@ -181,3 +184,48 @@ def get_debug_history_by_id(
         "created_at": record.created_at,
     }
 
+
+@router.get("/debug/history/{history_id}/export")
+def export_debug_history(
+    history_id: int,
+    db: Session = Depends(get_db),
+):
+    record = (
+        db.query(DebugHistory)
+        .filter(DebugHistory.id == history_id)
+        .first()
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Debug history record {history_id} not found",
+        )
+
+    report = {
+        "id": record.id,
+        "error_message": record.error_message,
+        "exception_type": record.exception_type,
+        "root_cause": record.root_cause,
+        "confidence": record.confidence,
+        "fix_recommendation": record.fix_recommendation,
+        "fix_validation": record.fix_validation,
+        "ai_analysis": record.ai_analysis,
+        "created_at": record.created_at,
+    }
+
+    json_content = json.dumps(
+        jsonable_encoder(report),
+        indent=2,
+        ensure_ascii=False,
+    )
+
+    return Response(
+        content=json_content,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="traceiq_report_{record.id}.json"'
+            )
+        },
+    )
